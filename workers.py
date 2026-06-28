@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from app_logger import setup_request_logger
+from config import load_app_env
 from models import ChatListService
 from network import ModelResponse, send_prompt_via_service
 
@@ -20,6 +21,7 @@ class SendPromptWorker(QThread):
 
     def run(self) -> None:
         try:
+            load_app_env()
             logger = None
             if self.service.is_log_requests_enabled():
                 logger = setup_request_logger(True)

@@ -29,11 +29,23 @@ python main.py
 
 ## Настройка моделей
 
-При первом запуске в БД создаются модели OpenRouter (активны по умолчанию). Управление — вкладка **Модели**:
+При первом запуске в БД создаются **5 бесплатных моделей OpenRouter** (активны по умолчанию):
+
+| Модель | API ID |
+|--------|--------|
+| Qwen3 Next 80B (free) | `qwen/qwen3-next-80b-a3b-instruct:free` |
+| Gemma 4 31B (free) | `google/gemma-4-31b-it:free` |
+| GPT-OSS 20B (free) | `openai/gpt-oss-20b:free` |
+| Nemotron 3 Nano 30B (free) | `nvidia/nemotron-3-nano-30b-a3b:free` |
+| Llama 3.2 3B (free) | `meta-llama/llama-3.2-3b-instruct:free` |
+
+Все используют `OPENROUTER_API_KEY`. Лимиты бесплатного tier OpenRouter: ~50 запросов/день (до ~1000/день после пополнения $10+).
+
+Управление — вкладка **Модели**:
 
 - **Имя** — отображаемое название
 - **API URL** — endpoint (OpenRouter: `https://openrouter.ai/api/v1/chat/completions`)
-- **API ID** — идентификатор модели (например `openai/gpt-4o-mini`)
+- **API ID** — идентификатор модели (например `google/gemma-4-31b-it:free`)
 - **Переменная .env** — имя переменной с ключом (`OPENROUTER_API_KEY`)
 
 API-ключи хранятся только в `.env`, не в базе данных.

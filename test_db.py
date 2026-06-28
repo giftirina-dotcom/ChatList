@@ -21,12 +21,12 @@ def run_checks() -> None:
         print(f"Настройки: {len(settings)}")
 
         models = db.list_models(db_path=db_path)
-        assert len(models) >= 2
-        print(f"Модели: {[m['name'] for m in models]}")
+        assert len(models) == 5
+        print(f"Модели: {len(models)} шт.")
 
         active = db.list_models(active_only=True, db_path=db_path)
-        assert len(active) == 2
-        print(f"Активных моделей: {len(active)}")
+        assert len(active) == 5
+        print(f"Активных бесплатных моделей: {len(active)}")
 
         prompt_id = db.create_prompt("Тестовый промт", tags="test", db_path=db_path)
         prompt = db.get_prompt(prompt_id, db_path=db_path)
@@ -34,19 +34,8 @@ def run_checks() -> None:
         assert prompt["prompt"] == "Тестовый промт"
         print(f"Промт создан: id={prompt_id}")
 
-        db.update_model(
-            model_id=models[0]["id"],
-            name=models[0]["name"],
-            api_url=models[0]["api_url"],
-            api_id=models[0]["api_id"],
-            api_key_env=models[0]["api_key_env"],
-            is_active=True,
-            model_type=models[0]["model_type"],
-            db_path=db_path,
-        )
-        active = db.list_models(active_only=True, db_path=db_path)
-        assert len(active) == 3
-        print(f"Активирована модель: {active[0]['name']} (всего активных: {len(active)})")
+        assert all(m["is_active"] for m in models)
+        print("Все 5 моделей активны")
 
         result_id = db.create_result(
             prompt_id=prompt_id,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QFontMetrics
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -33,9 +35,22 @@ from PyQt6.QtWidgets import (
 
 from export_utils import export_to_json, export_to_markdown
 from models import ChatListService, Model, TempResult
+from network import format_error_for_user
 from workers import SendPromptWorker
 
-MODEL_TYPES = ["openai", "deepseek", "groq", "openrouter"]
+OPENROUTER_AUTH_HINT = (
+    "Проверьте файл .env в каталоге программы:\n"
+    "OPENROUTER_API_KEY=sk-or-v1-ваш_ключ\n\n"
+    "Ключ берётся на https://openrouter.ai/keys"
+)
+
+MODEL_TYPES = ["openrouter"]
+RESPONSE_MIN_LINES = 5
+NUMBER_COLUMN = 0
+CHECKBOX_COLUMN = 1
+MODEL_COLUMN = 2
+RESPONSE_COLUMN = 3
+RESPONSE_HIGHLIGHT = QColor(255, 248, 180)
 
 
 def _truncate(text: str, limit: int = 80) -> str:
@@ -149,6 +164,31 @@ class ModelDialog(QDialog):
         }
 
 
+class ResponseViewerDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None,
+        model_name: str,
+        response_text: str,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Ответ — {model_name}")
+        self.resize(760, 560)
+
+        layout = QVBoxLayout(self)
+        viewer = QTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setMarkdown(response_text)
+        layout.addWidget(viewer)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        close_btn = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_btn is not None:
+            close_btn.clicked.connect(self.accept)
+        layout.addWidget(buttons)
+
+
 class RequestTab(QWidget):
     use_prompt = pyqtSignal(int)
     results_saved = pyqtSignal()
@@ -160,6 +200,7 @@ class RequestTab(QWidget):
         self.temp_results: list[TempResult] = []
         self._worker: SendPromptWorker | None = None
         self._loading = False
+        self._highlighted_response_row: int | None = None
 
         layout = QVBoxLayout(self)
 
@@ -171,24 +212,61 @@ class RequestTab(QWidget):
         prompt_row.addWidget(self.prompt_combo, stretch=1)
         layout.addLayout(prompt_row)
 
-        layout.addWidget(QLabel("Промт:"))
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        prompt_panel = QWidget()
+        prompt_panel_layout = QVBoxLayout(prompt_panel)
+        prompt_panel_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_panel_layout.addWidget(QLabel("Промт:"))
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setPlaceholderText("Введите текст запроса...")
-        self.prompt_edit.setMinimumHeight(120)
+        self.prompt_edit.setMinimumHeight(60)
         self.prompt_edit.textChanged.connect(self.on_prompt_text_changed)
-        layout.addWidget(self.prompt_edit)
+        prompt_panel_layout.addWidget(self.prompt_edit)
 
         tags_row = QHBoxLayout()
         tags_row.addWidget(QLabel("Теги:"))
         self.tags_edit = QLineEdit()
         self.tags_edit.setPlaceholderText("python, test")
         tags_row.addWidget(self.tags_edit, stretch=1)
-        layout.addLayout(tags_row)
+        prompt_panel_layout.addLayout(tags_row)
 
-        buttons_row = QHBoxLayout()
         self.send_button = QPushButton("Отправить")
         self.send_button.clicked.connect(self.on_send_clicked)
-        buttons_row.addWidget(self.send_button)
+        prompt_panel_layout.addWidget(self.send_button)
+
+        results_panel = QWidget()
+        results_panel_layout = QVBoxLayout(results_panel)
+        results_panel_layout.setContentsMargins(0, 0, 0, 0)
+        results_panel_layout.addWidget(QLabel("Результаты:"))
+        self.results_table = QTableWidget(0, 4)
+        self.results_table.setHorizontalHeaderLabels(["№", "Выбрать", "Модель", "Ответ"])
+        header = self.results_table.horizontalHeader()
+        if header is not None:
+            header.setSectionResizeMode(NUMBER_COLUMN, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(CHECKBOX_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(MODEL_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(RESPONSE_COLUMN, QHeaderView.ResizeMode.Stretch)
+        self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.results_table.setWordWrap(True)
+        self.results_table.setTextElideMode(Qt.TextElideMode.ElideNone)
+        vheader = self.results_table.verticalHeader()
+        if vheader is not None:
+            vheader.setVisible(False)
+        self.results_table.itemChanged.connect(self._on_result_checkbox_changed)
+        self.results_table.cellClicked.connect(self._on_results_cell_clicked)
+        results_panel_layout.addWidget(self.results_table)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        results_panel_layout.addWidget(self.progress)
+
+        buttons_row = QHBoxLayout()
+        self.open_button = QPushButton("Открыть")
+        self.open_button.clicked.connect(self.open_selected_response)
+        self.open_button.setEnabled(False)
+        buttons_row.addWidget(self.open_button)
 
         self.save_button = QPushButton("Сохранить")
         self.save_button.clicked.connect(self.on_save_clicked)
@@ -205,24 +283,16 @@ class RequestTab(QWidget):
         self.export_json_button.setEnabled(False)
         buttons_row.addWidget(self.export_json_button)
         buttons_row.addStretch()
-        layout.addLayout(buttons_row)
+        results_panel_layout.addLayout(buttons_row)
 
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.hide()
-        layout.addWidget(self.progress)
-
-        layout.addWidget(QLabel("Результаты:"))
-        self.results_table = QTableWidget(0, 3)
-        self.results_table.setHorizontalHeaderLabels(["Модель", "Ответ", "Выбрать"])
-        header = self.results_table.horizontalHeader()
-        if header is not None:
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.results_table.itemChanged.connect(self._on_result_checkbox_changed)
-        layout.addWidget(self.results_table)
+        prompt_panel.setMinimumHeight(100)
+        results_panel.setMinimumHeight(120)
+        splitter.addWidget(prompt_panel)
+        splitter.addWidget(results_panel)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([220, 380])
+        layout.addWidget(splitter, stretch=1)
 
         self.status_label = QLabel("Готово")
         layout.addWidget(self.status_label)
@@ -273,12 +343,14 @@ class RequestTab(QWidget):
 
     def clear_temp_results(self) -> None:
         self.temp_results.clear()
+        self._highlighted_response_row = None
         self.results_table.blockSignals(True)
         self.results_table.setRowCount(0)
         self.results_table.blockSignals(False)
         self.save_button.setEnabled(False)
         self.export_md_button.setEnabled(False)
         self.export_json_button.setEnabled(False)
+        self.open_button.setEnabled(False)
 
     def _ensure_prompt_saved(self) -> int:
         text = self.prompt_edit.toPlainText().strip()
@@ -307,6 +379,10 @@ class RequestTab(QWidget):
             )
             return
 
+        if not self.service.has_usable_openrouter_key():
+            QMessageBox.warning(self, "ChatList — API-ключ", OPENROUTER_AUTH_HINT)
+            return
+
         self._ensure_prompt_saved()
         self.clear_temp_results()
         self._set_loading(True)
@@ -324,6 +400,7 @@ class RequestTab(QWidget):
         self.save_button.setEnabled(bool(self.temp_results))
         self.export_md_button.setEnabled(bool(self.temp_results))
         self.export_json_button.setEnabled(bool(self.temp_results))
+        self.open_button.setEnabled(bool(self.temp_results))
         errors = sum(1 for item in self.temp_results if item.error)
         self.status_label.setText(
             f"Получено ответов: {len(self.temp_results)}"
@@ -380,24 +457,104 @@ class RequestTab(QWidget):
             )
         QMessageBox.information(self, "ChatList", f"Экспорт выполнен:\n{path}")
 
+    def _clear_response_highlight(self) -> None:
+        if self._highlighted_response_row is None:
+            return
+        item = self.results_table.item(self._highlighted_response_row, RESPONSE_COLUMN)
+        if item is not None:
+            item.setBackground(QBrush())
+        self._highlighted_response_row = None
+
+    def _highlight_response_cell(self, row: int) -> None:
+        self._clear_response_highlight()
+        item = self.results_table.item(row, RESPONSE_COLUMN)
+        if item is None:
+            return
+        item.setBackground(QBrush(RESPONSE_HIGHLIGHT))
+        self._highlighted_response_row = row
+
+    def _on_results_cell_clicked(self, row: int, column: int) -> None:
+        if column == RESPONSE_COLUMN:
+            self._highlight_response_cell(row)
+        else:
+            self._clear_response_highlight()
+
+    def _selected_response_row(self) -> int | None:
+        if self._highlighted_response_row is not None:
+            return self._highlighted_response_row
+        row = self.results_table.currentRow()
+        return row if row >= 0 else None
+
+    def open_selected_response(self) -> None:
+        row = self._selected_response_row()
+        if row is None or row >= len(self.temp_results):
+            QMessageBox.warning(
+                self,
+                "ChatList",
+                "Выберите ячейку с ответом в таблице результатов.",
+            )
+            return
+        item = self.temp_results[row]
+        dialog = ResponseViewerDialog(self, item.model_name, item.response_text)
+        dialog.exec()
+
+    def _min_response_row_height(self) -> int:
+        metrics = QFontMetrics(self.results_table.font())
+        return metrics.lineSpacing() * RESPONSE_MIN_LINES + 12
+
+    def _resize_result_rows(self) -> None:
+        min_height = self._min_response_row_height()
+        for row in range(self.results_table.rowCount()):
+            self.results_table.resizeRowToContents(row)
+            if self.results_table.rowHeight(row) < min_height:
+                self.results_table.setRowHeight(row, min_height)
+
+    def _update_number_column_width(self) -> None:
+        count = max(1, self.results_table.rowCount())
+        metrics = QFontMetrics(self.results_table.font())
+        width = metrics.horizontalAdvance(str(count)) + 20
+        self.results_table.setColumnWidth(NUMBER_COLUMN, max(width, 36))
+
     def _fill_results_table(self) -> None:
+        self._highlighted_response_row = None
         self.results_table.blockSignals(True)
         self.results_table.setRowCount(len(self.temp_results))
+        text_top = Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        center = Qt.AlignmentFlag.AlignCenter
         for row, item in enumerate(self.temp_results):
-            self.results_table.setItem(row, 0, QTableWidgetItem(item.model_name))
-            self.results_table.setItem(row, 1, QTableWidgetItem(item.response_text))
+            number_item = QTableWidgetItem(str(row + 1))
+            number_item.setTextAlignment(center)
+            number_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.results_table.setItem(row, NUMBER_COLUMN, number_item)
+
             checkbox_item = QTableWidgetItem()
             checkbox_item.setFlags(
                 Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
             )
+            checkbox_item.setTextAlignment(center)
             checkbox_item.setCheckState(
                 Qt.CheckState.Checked if item.selected else Qt.CheckState.Unchecked
             )
-            self.results_table.setItem(row, 2, checkbox_item)
+            self.results_table.setItem(row, CHECKBOX_COLUMN, checkbox_item)
+
+            name_item = QTableWidgetItem(item.model_name)
+            name_item.setTextAlignment(text_top)
+            self.results_table.setItem(row, MODEL_COLUMN, name_item)
+
+            display_text = item.response_text
+            if item.error:
+                display_text = format_error_for_user(item.error)
+            response_item = QTableWidgetItem(display_text)
+            response_item.setTextAlignment(text_top)
+            if item.error:
+                response_item.setForeground(QBrush(QColor(160, 40, 40)))
+            self.results_table.setItem(row, RESPONSE_COLUMN, response_item)
+        self._update_number_column_width()
+        self._resize_result_rows()
         self.results_table.blockSignals(False)
 
     def _on_result_checkbox_changed(self, table_item: QTableWidgetItem) -> None:
-        if table_item.column() != 2:
+        if table_item.column() != CHECKBOX_COLUMN:
             return
         row = table_item.row()
         if row < 0 or row >= len(self.temp_results):
@@ -701,10 +858,11 @@ class SettingsTab(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, service: ChatListService, db_path: Path) -> None:
+    def __init__(self, service: ChatListService, db_path: Path, env_path: Path | None = None) -> None:
         super().__init__()
         self.service = service
         self.db_path = db_path
+        self.env_path = env_path
 
         self.setWindowTitle("ChatList")
         self.resize(1000, 700)
@@ -728,7 +886,20 @@ class MainWindow(QMainWindow):
         self.settings_tab.settings_saved.connect(self._apply_theme)
 
         self._apply_theme()
-        self.statusBar().showMessage(f"БД: {db_path}")
+        env_info = f"БД: {db_path}"
+        if env_path is not None:
+            env_info += f" | .env: {env_path}"
+        self.statusBar().showMessage(env_info)
+        self._warn_if_missing_api_key()
+
+    def _warn_if_missing_api_key(self) -> None:
+        if self.service.get_active_models() and not self.service.has_usable_openrouter_key():
+            QMessageBox.warning(
+                self,
+                "ChatList — API-ключ",
+                "Не найден действующий OPENROUTER_API_KEY в .env.\n\n"
+                + OPENROUTER_AUTH_HINT,
+            )
 
     def _use_prompt(self, prompt_id: int) -> None:
         self.request_tab.load_prompt(prompt_id)

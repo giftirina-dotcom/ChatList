@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import db
+from config import resolve_api_key
 
 
 @dataclass
@@ -148,10 +148,10 @@ class ChatListService:
         db.delete_model(model_id, db_path=self.db_path)
 
     def get_api_key(self, model: Model) -> str | None:
-        value = os.getenv(model.api_key_env)
-        if value is None or not value.strip():
-            return None
-        return value.strip()
+        return resolve_api_key(model.api_key_env, model.model_type)
+
+    def has_usable_openrouter_key(self) -> bool:
+        return resolve_api_key("OPENROUTER_API_KEY", "openrouter") is not None
 
     # --- prompts ---
 

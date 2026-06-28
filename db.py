@@ -57,48 +57,53 @@ SEED_SETTINGS: list[tuple[str, str]] = [
     ("log_requests", "0"),
 ]
 
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# name, api_url, api_id, api_key_env, is_active, model_type
 SEED_MODELS: list[tuple[str, str, str, str, int, str | None]] = [
     (
-        "GPT-4o",
-        "https://api.openai.com/v1/chat/completions",
-        "gpt-4o",
-        "OPENAI_API_KEY",
-        0,
-        "openai",
-    ),
-    (
-        "DeepSeek Chat",
-        "https://api.deepseek.com/v1/chat/completions",
-        "deepseek-chat",
-        "DEEPSEEK_API_KEY",
-        0,
-        "deepseek",
-    ),
-    (
-        "OpenRouter GPT-4o Mini",
-        "https://openrouter.ai/api/v1/chat/completions",
-        "openai/gpt-4o-mini",
+        "Qwen3 Next 80B (free)",
+        OPENROUTER_URL,
+        "qwen/qwen3-next-80b-a3b-instruct:free",
         "OPENROUTER_API_KEY",
         1,
         "openrouter",
     ),
     (
-        "OpenRouter Gemini 2.0 Flash",
-        "https://openrouter.ai/api/v1/chat/completions",
-        "google/gemini-2.0-flash-001",
+        "Gemma 4 31B (free)",
+        OPENROUTER_URL,
+        "google/gemma-4-31b-it:free",
         "OPENROUTER_API_KEY",
         1,
         "openrouter",
     ),
     (
-        "OpenRouter DeepSeek Chat",
-        "https://openrouter.ai/api/v1/chat/completions",
-        "deepseek/deepseek-chat",
+        "GPT-OSS 20B (free)",
+        OPENROUTER_URL,
+        "openai/gpt-oss-20b:free",
         "OPENROUTER_API_KEY",
-        0,
+        1,
+        "openrouter",
+    ),
+    (
+        "Nemotron 3 Nano 30B (free)",
+        OPENROUTER_URL,
+        "nvidia/nemotron-3-nano-30b-a3b:free",
+        "OPENROUTER_API_KEY",
+        1,
+        "openrouter",
+    ),
+    (
+        "Llama 3.2 3B (free)",
+        OPENROUTER_URL,
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "OPENROUTER_API_KEY",
+        1,
         "openrouter",
     ),
 ]
+
+ALLOWED_MODEL_API_IDS = tuple(row[2] for row in SEED_MODELS)
 
 
 def utc_now_iso() -> str:
@@ -136,6 +141,25 @@ def open_db(db_path: str | Path | None = None):
         conn.close()
 
 
+def _purge_extra_models(conn: sqlite3.Connection) -> None:
+    """Удаляет из БД все модели, не входящие в ALLOWED_MODEL_API_IDS."""
+    placeholders = ",".join("?" * len(ALLOWED_MODEL_API_IDS))
+    params = list(ALLOWED_MODEL_API_IDS)
+    conn.execute(
+        f"""
+        DELETE FROM results
+        WHERE model_id IN (
+            SELECT id FROM models WHERE api_id NOT IN ({placeholders})
+        )
+        """,
+        params,
+    )
+    conn.execute(
+        f"DELETE FROM models WHERE api_id NOT IN ({placeholders})",
+        params,
+    )
+
+
 def init_db(db_path: str | Path | None = None) -> Path:
     path = resolve_db_path(db_path)
     with open_db(path) as conn:
@@ -153,6 +177,19 @@ def init_db(db_path: str | Path | None = None) -> Path:
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (name, api_url, api_id, api_key_env, is_active, model_type),
+            )
+        _purge_extra_models(conn)
+        for api_id in ALLOWED_MODEL_API_IDS:
+            conn.execute(
+                """
+                UPDATE models
+                SET is_active = 1,
+                    api_url = ?,
+                    api_key_env = 'OPENROUTER_API_KEY',
+                    model_type = 'openrouter'
+                WHERE api_id = ?
+                """,
+                (OPENROUTER_URL, api_id),
             )
         conn.commit()
     return path
