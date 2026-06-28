@@ -29,13 +29,14 @@ python main.py
 
 ## Настройка моделей
 
-При первом запуске в БД создаются **5 бесплатных моделей OpenRouter** (активны по умолчанию):
+При первом запуске в БД создаются **6 бесплатных моделей OpenRouter** (активны по умолчанию):
 
 | Модель | API ID |
 |--------|--------|
 | Qwen3 Next 80B (free) | `qwen/qwen3-next-80b-a3b-instruct:free` |
 | Gemma 4 31B (free) | `google/gemma-4-31b-it:free` |
-| GPT-OSS 20B (free) | `openai/gpt-oss-20b:free` |
+| OpenAI: gpt-oss-20b (free) | `openai/gpt-oss-20b:free` |
+| OpenAI: gpt-oss-120b (free) | `openai/gpt-oss-120b:free` |
 | Nemotron 3 Nano 30B (free) | `nvidia/nemotron-3-nano-30b-a3b:free` |
 | Llama 3.2 3B (free) | `meta-llama/llama-3.2-3b-instruct:free` |
 

@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 from export_utils import export_to_json, export_to_markdown
-from models import ChatListService, Model, TempResult
+from models import ChatListService, Model, Prompt, TempResult
 from network import format_error_for_user
 from workers import SendPromptWorker
 
@@ -164,6 +164,38 @@ class ModelDialog(QDialog):
         }
 
 
+class PromptDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        prompt: Prompt | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Редактирование промта")
+        self.setMinimumWidth(520)
+        self.resize(560, 360)
+
+        form = QFormLayout(self)
+        self.prompt_edit = QTextEdit(prompt.prompt if prompt else "")
+        self.prompt_edit.setMinimumHeight(160)
+        self.tags_edit = QLineEdit(prompt.tags if prompt and prompt.tags else "")
+
+        form.addRow("Промт:", self.prompt_edit)
+        form.addRow("Теги:", self.tags_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def get_data(self) -> dict[str, str | None]:
+        text = self.prompt_edit.toPlainText().strip()
+        tags = self.tags_edit.text().strip() or None
+        return {"prompt": text, "tags": tags}
+
+
 class ResponseViewerDialog(QDialog):
     def __init__(
         self,
@@ -232,6 +264,18 @@ class RequestTab(QWidget):
         prompt_panel_layout.addLayout(tags_row)
 
         self.send_button = QPushButton("Отправить")
+        self.send_button.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #42a5f5;"
+            "  color: white;"
+            "  border: none;"
+            "  padding: 6px 16px;"
+            "  border-radius: 4px;"
+            "}"
+            "QPushButton:hover { background-color: #1e88e5; }"
+            "QPushButton:pressed { background-color: #1565c0; }"
+            "QPushButton:disabled { background-color: #b0bec5; color: #eceff1; }"
+        )
         self.send_button.clicked.connect(self.on_send_clicked)
         prompt_panel_layout.addWidget(self.send_button)
 
@@ -244,16 +288,16 @@ class RequestTab(QWidget):
         header = self.results_table.horizontalHeader()
         if header is not None:
             header.setSectionResizeMode(NUMBER_COLUMN, QHeaderView.ResizeMode.Fixed)
-            header.setSectionResizeMode(CHECKBOX_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(CHECKBOX_COLUMN, QHeaderView.ResizeMode.Fixed)
             header.setSectionResizeMode(MODEL_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(RESPONSE_COLUMN, QHeaderView.ResizeMode.Stretch)
+        self.results_table.setColumnWidth(CHECKBOX_COLUMN, 72)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.results_table.setWordWrap(True)
         self.results_table.setTextElideMode(Qt.TextElideMode.ElideNone)
         vheader = self.results_table.verticalHeader()
         if vheader is not None:
             vheader.setVisible(False)
-        self.results_table.itemChanged.connect(self._on_result_checkbox_changed)
         self.results_table.cellClicked.connect(self._on_results_cell_clicked)
         results_panel_layout.addWidget(self.results_table)
 
@@ -515,27 +559,58 @@ class RequestTab(QWidget):
         width = metrics.horizontalAdvance(str(count)) + 20
         self.results_table.setColumnWidth(NUMBER_COLUMN, max(width, 36))
 
+    def _create_result_checkbox_widget(self, row: int, checked: bool) -> QWidget:
+        container = QWidget()
+        container.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        checkbox = QCheckBox()
+        checkbox.setChecked(checked)
+        checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        checkbox.stateChanged.connect(
+            lambda _state, result_row=row: self._on_result_checkbox_widget_toggled(result_row)
+        )
+        layout.addWidget(checkbox)
+
+        def on_press(event) -> None:
+            if event.button() == Qt.MouseButton.LeftButton:
+                checkbox.setChecked(not checkbox.isChecked())
+                event.accept()
+                return
+            QWidget.mousePressEvent(container, event)
+
+        container.mousePressEvent = on_press
+        return container
+
+    def _on_result_checkbox_widget_toggled(self, row: int) -> None:
+        if row < 0 or row >= len(self.temp_results):
+            return
+        widget = self.results_table.cellWidget(row, CHECKBOX_COLUMN)
+        if widget is None:
+            return
+        checkbox = widget.findChild(QCheckBox)
+        if checkbox is not None:
+            self.temp_results[row].selected = checkbox.isChecked()
+
     def _fill_results_table(self) -> None:
         self._highlighted_response_row = None
         self.results_table.blockSignals(True)
         self.results_table.setRowCount(len(self.temp_results))
         text_top = Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
-        center = Qt.AlignmentFlag.AlignCenter
         for row, item in enumerate(self.temp_results):
             number_item = QTableWidgetItem(str(row + 1))
-            number_item.setTextAlignment(center)
+            number_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+            )
             number_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.results_table.setItem(row, NUMBER_COLUMN, number_item)
 
-            checkbox_item = QTableWidgetItem()
-            checkbox_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+            self.results_table.setCellWidget(
+                row,
+                CHECKBOX_COLUMN,
+                self._create_result_checkbox_widget(row, item.selected),
             )
-            checkbox_item.setTextAlignment(center)
-            checkbox_item.setCheckState(
-                Qt.CheckState.Checked if item.selected else Qt.CheckState.Unchecked
-            )
-            self.results_table.setItem(row, CHECKBOX_COLUMN, checkbox_item)
 
             name_item = QTableWidgetItem(item.model_name)
             name_item.setTextAlignment(text_top)
@@ -552,14 +627,6 @@ class RequestTab(QWidget):
         self._update_number_column_width()
         self._resize_result_rows()
         self.results_table.blockSignals(False)
-
-    def _on_result_checkbox_changed(self, table_item: QTableWidgetItem) -> None:
-        if table_item.column() != CHECKBOX_COLUMN:
-            return
-        row = table_item.row()
-        if row < 0 or row >= len(self.temp_results):
-            return
-        self.temp_results[row].selected = table_item.checkState() == Qt.CheckState.Checked
 
 
 class ModelsTab(QWidget):
@@ -677,6 +744,7 @@ class ModelsTab(QWidget):
 
 class PromptsTab(QWidget):
     use_prompt = pyqtSignal(int)
+    prompt_updated = pyqtSignal(int)
 
     def __init__(self, service: ChatListService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -689,11 +757,13 @@ class PromptsTab(QWidget):
         buttons = QHBoxLayout()
         use_btn = QPushButton("Использовать")
         use_btn.clicked.connect(self.use_selected)
+        edit_btn = QPushButton("Редактировать")
+        edit_btn.clicked.connect(self.edit_selected)
         delete_btn = QPushButton("Удалить")
         delete_btn.clicked.connect(self.delete_selected)
         refresh_btn = QPushButton("Обновить")
         refresh_btn.clicked.connect(self.refresh)
-        for btn in (use_btn, delete_btn, refresh_btn):
+        for btn in (use_btn, edit_btn, delete_btn, refresh_btn):
             buttons.addWidget(btn)
         buttons.addStretch()
         layout.addLayout(buttons)
@@ -722,6 +792,27 @@ class PromptsTab(QWidget):
             return
         self.use_prompt.emit(prompt_id)
 
+    def edit_selected(self) -> None:
+        prompt_id = self.table.selected_row_id()
+        if prompt_id is None:
+            QMessageBox.warning(self, "ChatList", "Выберите промт.")
+            return
+        prompt = self.service.get_prompt(prompt_id)
+        if prompt is None:
+            return
+        dialog = PromptDialog(self, prompt)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.get_data()
+        if not data["prompt"]:
+            QMessageBox.warning(self, "ChatList", "Текст промта не может быть пустым.")
+            return
+        prompt.prompt = str(data["prompt"])
+        prompt.tags = data["tags"]
+        self.service.update_prompt(prompt)
+        self.refresh()
+        self.prompt_updated.emit(prompt.id)
+
     def delete_selected(self) -> None:
         prompt_id = self.table.selected_row_id()
         if prompt_id is None:
@@ -743,6 +834,8 @@ class ResultsTab(QWidget):
         layout.addWidget(self.table)
 
         buttons = QHBoxLayout()
+        open_btn = QPushButton("Открыть")
+        open_btn.clicked.connect(self.open_selected)
         export_md = QPushButton("Экспорт MD")
         export_md.clicked.connect(lambda: self.export("md"))
         export_json = QPushButton("Экспорт JSON")
@@ -751,7 +844,7 @@ class ResultsTab(QWidget):
         delete_btn.clicked.connect(self.delete_selected)
         refresh_btn = QPushButton("Обновить")
         refresh_btn.clicked.connect(self.refresh)
-        for btn in (export_md, export_json, delete_btn, refresh_btn):
+        for btn in (open_btn, export_md, export_json, delete_btn, refresh_btn):
             buttons.addWidget(btn)
         buttons.addStretch()
         layout.addLayout(buttons)
@@ -782,6 +875,16 @@ class ResultsTab(QWidget):
             if result.id == result_id:
                 return result
         return None
+
+    def open_selected(self) -> None:
+        result = self._selected_result()
+        if result is None:
+            QMessageBox.warning(self, "ChatList", "Выберите результат.")
+            return
+        model = self.service.get_model(result.model_id)
+        model_name = model.name if model else "Модель"
+        dialog = ResponseViewerDialog(self, model_name, result.response_text)
+        dialog.exec()
 
     def delete_selected(self) -> None:
         result = self._selected_result()
@@ -875,13 +978,14 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab(service)
 
         tabs.addTab(self.request_tab, "Запрос")
-        tabs.addTab(self.models_tab, "Модели")
         tabs.addTab(self.prompts_tab, "Промты")
+        tabs.addTab(self.models_tab, "Модели")
         tabs.addTab(self.results_tab, "Результаты")
         tabs.addTab(self.settings_tab, "Настройки")
         self.setCentralWidget(tabs)
 
         self.prompts_tab.use_prompt.connect(self._use_prompt)
+        self.prompts_tab.prompt_updated.connect(self._on_prompt_updated)
         self.request_tab.results_saved.connect(self.results_tab.refresh)
         self.settings_tab.settings_saved.connect(self._apply_theme)
 
@@ -905,6 +1009,11 @@ class MainWindow(QMainWindow):
         self.request_tab.load_prompt(prompt_id)
         if self.centralWidget() and isinstance(self.centralWidget(), QTabWidget):
             self.centralWidget().setCurrentIndex(0)
+
+    def _on_prompt_updated(self, prompt_id: int) -> None:
+        self.request_tab.reload_prompt_combo(select_id=prompt_id)
+        if self.request_tab.current_prompt_id == prompt_id:
+            self.request_tab.load_prompt(prompt_id)
 
     def _apply_theme(self) -> None:
         theme = self.service.get_setting("theme", "Системная") or "Системная"

@@ -21,11 +21,11 @@ def run_checks() -> None:
         print(f"Настройки: {len(settings)}")
 
         models = db.list_models(db_path=db_path)
-        assert len(models) == 5
+        assert len(models) == 6
         print(f"Модели: {len(models)} шт.")
 
         active = db.list_models(active_only=True, db_path=db_path)
-        assert len(active) == 5
+        assert len(active) == 6
         print(f"Активных бесплатных моделей: {len(active)}")
 
         prompt_id = db.create_prompt("Тестовый промт", tags="test", db_path=db_path)
@@ -35,7 +35,7 @@ def run_checks() -> None:
         print(f"Промт создан: id={prompt_id}")
 
         assert all(m["is_active"] for m in models)
-        print("Все 5 моделей активны")
+        print("Все 6 моделей активны")
 
         result_id = db.create_result(
             prompt_id=prompt_id,

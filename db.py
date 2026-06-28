@@ -78,9 +78,17 @@ SEED_MODELS: list[tuple[str, str, str, str, int, str | None]] = [
         "openrouter",
     ),
     (
-        "GPT-OSS 20B (free)",
+        "OpenAI: gpt-oss-20b (free)",
         OPENROUTER_URL,
         "openai/gpt-oss-20b:free",
+        "OPENROUTER_API_KEY",
+        1,
+        "openrouter",
+    ),
+    (
+        "OpenAI: gpt-oss-120b (free)",
+        OPENROUTER_URL,
+        "openai/gpt-oss-120b:free",
         "OPENROUTER_API_KEY",
         1,
         "openrouter",
@@ -160,6 +168,18 @@ def _purge_extra_models(conn: sqlite3.Connection) -> None:
     )
 
 
+def _dedupe_models_by_api_id(conn: sqlite3.Connection) -> None:
+    """Оставляет одну запись на api_id (с минимальным id)."""
+    conn.execute(
+        """
+        DELETE FROM models
+        WHERE id NOT IN (
+            SELECT MIN(id) FROM models GROUP BY api_id
+        )
+        """
+    )
+
+
 def init_db(db_path: str | Path | None = None) -> Path:
     path = resolve_db_path(db_path)
     with open_db(path) as conn:
@@ -169,28 +189,35 @@ def init_db(db_path: str | Path | None = None) -> Path:
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
+        _dedupe_models_by_api_id(conn)
         for name, api_url, api_id, api_key_env, is_active, model_type in SEED_MODELS:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO models
-                    (name, api_url, api_id, api_key_env, is_active, model_type)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (name, api_url, api_id, api_key_env, is_active, model_type),
-            )
+            existing = conn.execute(
+                "SELECT id FROM models WHERE api_id = ?",
+                (api_id,),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO models
+                        (name, api_url, api_id, api_key_env, is_active, model_type)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (name, api_url, api_id, api_key_env, is_active, model_type),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE models
+                    SET name = ?,
+                        api_url = ?,
+                        api_key_env = ?,
+                        is_active = ?,
+                        model_type = ?
+                    WHERE api_id = ?
+                    """,
+                    (name, api_url, api_key_env, is_active, model_type, api_id),
+                )
         _purge_extra_models(conn)
-        for api_id in ALLOWED_MODEL_API_IDS:
-            conn.execute(
-                """
-                UPDATE models
-                SET is_active = 1,
-                    api_url = ?,
-                    api_key_env = 'OPENROUTER_API_KEY',
-                    model_type = 'openrouter'
-                WHERE api_id = ?
-                """,
-                (OPENROUTER_URL, api_id),
-            )
         conn.commit()
     return path
 
