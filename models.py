@@ -235,3 +235,36 @@ class ChatListService:
             return max(1, int(raw or "30"))
         except ValueError:
             return 30
+
+    def is_log_requests_enabled(self) -> bool:
+        return self.get_setting("log_requests", "0") == "1"
+
+    def search_prompts(self, query: str) -> list[Prompt]:
+        query_lower = query.strip().lower()
+        prompts = self.list_prompts()
+        if not query_lower:
+            return prompts
+        return [
+            prompt
+            for prompt in prompts
+            if query_lower in prompt.prompt.lower()
+            or (prompt.tags and query_lower in prompt.tags.lower())
+        ]
+
+    def get_result_rows(self) -> list[dict]:
+        rows: list[dict] = []
+        for result in self.list_results():
+            prompt = self.get_prompt(result.prompt_id)
+            model = self.get_model(result.model_id)
+            rows.append(
+                {
+                    "id": result.id,
+                    "created_at": result.created_at,
+                    "prompt_id": result.prompt_id,
+                    "prompt": prompt.prompt if prompt else "",
+                    "model_id": result.model_id,
+                    "model_name": model.name if model else "",
+                    "response_text": result.response_text,
+                }
+            )
+        return rows

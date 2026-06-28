@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
@@ -10,7 +11,7 @@ import httpx
 
 from models import ChatListService, Model, TempResult
 
-OPENAI_COMPATIBLE_TYPES = {"openai", "deepseek", "groq"}
+OPENAI_COMPATIBLE_TYPES = {"openai", "deepseek", "groq", "openrouter"}
 
 
 @dataclass
@@ -45,16 +46,24 @@ def _build_openai_payload(model: Model, prompt: str) -> dict:
     }
 
 
+def _build_headers(model: Model, api_key: str) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if (model.model_type or "").lower() == "openrouter":
+        headers["HTTP-Referer"] = "https://github.com/chatlist"
+        headers["X-Title"] = "ChatList"
+    return headers
+
+
 def _send_openai_compatible(
     model: Model,
     prompt: str,
     api_key: str,
     timeout: float,
 ) -> str:
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = _build_headers(model, api_key)
     payload = _build_openai_payload(model, prompt)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(model.api_url, headers=headers, json=payload)
@@ -67,6 +76,7 @@ def send_prompt_to_model(
     prompt: str,
     api_key: str | None,
     timeout: float = 30.0,
+    logger: logging.Logger | None = None,
 ) -> ModelResponse:
     if not prompt.strip():
         return ModelResponse(
@@ -77,60 +87,65 @@ def send_prompt_to_model(
         )
 
     if api_key is None:
+        error = f"API-ключ не найден в .env ({model.api_key_env})"
+        if logger:
+            from app_logger import log_request
+
+            log_request(logger, model.name, prompt, "error", error)
         return ModelResponse(
             model_id=model.id,
             model_name=model.name,
             response_text="",
-            error=f"API-ключ не найден в .env ({model.api_key_env})",
+            error=error,
         )
 
     model_type = (model.model_type or "openai").lower()
     if model_type not in OPENAI_COMPATIBLE_TYPES:
+        error = f"Неподдерживаемый тип модели: {model_type}"
+        if logger:
+            from app_logger import log_request
+
+            log_request(logger, model.name, prompt, "error", error)
         return ModelResponse(
             model_id=model.id,
             model_name=model.name,
             response_text="",
-            error=f"Неподдерживаемый тип модели: {model_type}",
+            error=error,
         )
 
     try:
         text = _send_openai_compatible(model, prompt, api_key, timeout)
+        if logger:
+            from app_logger import log_request
+
+            log_request(logger, model.name, prompt, "ok")
         return ModelResponse(
             model_id=model.id,
             model_name=model.name,
             response_text=text,
         )
     except httpx.TimeoutException:
-        return ModelResponse(
-            model_id=model.id,
-            model_name=model.name,
-            response_text="",
-            error="Превышено время ожидания ответа",
-        )
+        error = "Превышено время ожидания ответа"
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text.strip()
         if len(detail) > 200:
             detail = detail[:200] + "..."
-        return ModelResponse(
-            model_id=model.id,
-            model_name=model.name,
-            response_text="",
-            error=f"HTTP {exc.response.status_code}: {detail or exc.response.reason_phrase}",
-        )
+        error = f"HTTP {exc.response.status_code}: {detail or exc.response.reason_phrase}"
     except httpx.RequestError as exc:
-        return ModelResponse(
-            model_id=model.id,
-            model_name=model.name,
-            response_text="",
-            error=f"Ошибка сети: {exc}",
-        )
+        error = f"Ошибка сети: {exc}"
     except ValueError as exc:
-        return ModelResponse(
-            model_id=model.id,
-            model_name=model.name,
-            response_text="",
-            error=str(exc),
-        )
+        error = str(exc)
+
+    if logger:
+        from app_logger import log_request
+
+        log_request(logger, model.name, prompt, "error", error)
+    return ModelResponse(
+        model_id=model.id,
+        model_name=model.name,
+        response_text="",
+        error=error,
+    )
 
 
 def send_prompt_to_all(
@@ -139,13 +154,14 @@ def send_prompt_to_all(
     get_api_key: Callable[[Model], str | None],
     timeout: float = 30.0,
     parallel: bool = True,
+    logger: logging.Logger | None = None,
 ) -> list[ModelResponse]:
     if not models:
         return []
 
     if not parallel:
         return [
-            send_prompt_to_model(model, prompt, get_api_key(model), timeout)
+            send_prompt_to_model(model, prompt, get_api_key(model), timeout, logger)
             for model in models
         ]
 
@@ -158,6 +174,7 @@ def send_prompt_to_all(
                 prompt,
                 get_api_key(model),
                 timeout,
+                logger,
             ): model
             for model in models
         }
@@ -173,6 +190,7 @@ def send_prompt_via_service(
     service: ChatListService,
     prompt: str,
     parallel: bool = True,
+    logger: logging.Logger | None = None,
 ) -> list[ModelResponse]:
     models = service.get_active_models()
     timeout = float(service.get_request_timeout())
@@ -182,4 +200,5 @@ def send_prompt_via_service(
         get_api_key=service.get_api_key,
         timeout=timeout,
         parallel=parallel,
+        logger=logger,
     )

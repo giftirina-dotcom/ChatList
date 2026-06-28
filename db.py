@@ -74,6 +74,30 @@ SEED_MODELS: list[tuple[str, str, str, str, int, str | None]] = [
         0,
         "deepseek",
     ),
+    (
+        "OpenRouter GPT-4o Mini",
+        "https://openrouter.ai/api/v1/chat/completions",
+        "openai/gpt-4o-mini",
+        "OPENROUTER_API_KEY",
+        1,
+        "openrouter",
+    ),
+    (
+        "OpenRouter Gemini 2.0 Flash",
+        "https://openrouter.ai/api/v1/chat/completions",
+        "google/gemini-2.0-flash-001",
+        "OPENROUTER_API_KEY",
+        1,
+        "openrouter",
+    ),
+    (
+        "OpenRouter DeepSeek Chat",
+        "https://openrouter.ai/api/v1/chat/completions",
+        "deepseek/deepseek-chat",
+        "OPENROUTER_API_KEY",
+        0,
+        "openrouter",
+    ),
 ]
 
 

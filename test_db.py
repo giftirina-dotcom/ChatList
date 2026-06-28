@@ -25,8 +25,8 @@ def run_checks() -> None:
         print(f"Модели: {[m['name'] for m in models]}")
 
         active = db.list_models(active_only=True, db_path=db_path)
-        assert len(active) == 0
-        print("Активных моделей: 0")
+        assert len(active) == 2
+        print(f"Активных моделей: {len(active)}")
 
         prompt_id = db.create_prompt("Тестовый промт", tags="test", db_path=db_path)
         prompt = db.get_prompt(prompt_id, db_path=db_path)
@@ -45,8 +45,8 @@ def run_checks() -> None:
             db_path=db_path,
         )
         active = db.list_models(active_only=True, db_path=db_path)
-        assert len(active) == 1
-        print(f"Активирована модель: {active[0]['name']}")
+        assert len(active) == 3
+        print(f"Активирована модель: {active[0]['name']} (всего активных: {len(active)})")
 
         result_id = db.create_result(
             prompt_id=prompt_id,
